@@ -1,9 +1,14 @@
-scrapy_ajax_utils
+scrapy_ajax_utils_fix
 -----------------
+There are some bugs when working with selenium above 3.6 and docker in the [origin repo](https://github.com/kingronjan/scrapy_ajax_utils.git), so I fix it.
+NOTE: not test on firefox.
 
 
 utils for ajax in scrapy project. includes selenium, splash.
-
+## installtion
+```bash
+pip install git+
+```
 
 ## Usage
 ### For selenium
@@ -19,6 +24,9 @@ SELENIUM_DRIVER_PATH = None
 # Default: True
 SELENIUM_HEADLESS = True
 
+# Default: None
+# SELENIUM_DISABLE_IMAGE = True
+
 # Default: 30
 SELENIUM_DRIVER_PAGE_LOAD_TIMEOUT = 30
 
@@ -28,6 +36,10 @@ SELENIUM_DRIVER_PAGE_LOAD_TIMEOUT = 30
 
 # Default: 5
 # SELENIUM_MAX_DRIVERS = 10
+
+# USER_AGENT
+# Default: None
+# USER_AGENT = None
 ```
 Use in your spider:
 ```python

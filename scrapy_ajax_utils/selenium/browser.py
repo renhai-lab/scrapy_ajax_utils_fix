@@ -3,7 +3,7 @@ import os
 from scrapy.downloadermiddlewares.cookies import CookiesMiddleware
 from scrapy.http import HtmlResponse
 from selenium import webdriver
-
+from selenium.webdriver.chrome.service import Service
 _format_cookie = CookiesMiddleware()._format_cookie
 _js_fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stealth.min.js')
 
@@ -20,6 +20,7 @@ class Browser(object):
         assert driver_name in self.support_driver_map, f'{driver_name} not be supported!'
         self.driver_name = driver_name
         self.executable_path = executable_path
+        self.service = Service(executable_path=self.executable_path)
         self.page_load_time_out = page_load_time_out
         if options is not None:
             self.options = options
@@ -27,7 +28,7 @@ class Browser(object):
             self.options = make_options(self.driver_name, **opt_kw)
 
     def driver(self):
-        kwargs = {'executable_path': self.executable_path, 'options': self.options}
+        kwargs = {'service': self.service, 'options': self.options}
         # Close log file, only works for windows.
         if self.driver_name == 'firefox':
             kwargs['service_log_path'] = 'nul'
@@ -65,11 +66,19 @@ def make_options(driver_name, headless=True, disable_image=True, user_agent=None
         options = webdriver.ChromeOptions()
         options.headless = headless
         options.add_argument('--disable-gpu')
+        options.add_argument("--disable-blink-features=AutomationControlled")
         if user_agent:
             options.add_argument(f"--user-agent={user_agent}")
         if disable_image:
-            options.add_experimental_option('prefs', {'profile.default_content_setting_values': {'images': 2}})
+            options.add_argument('blink-settings=imagesEnabled=false')
         options.add_experimental_option('excludeSwitches', ['enable-automation', ])
+        # adding some options
+        options.add_argument('--incognito')
+        options.add_argument('lang=zh_CN.UTF-8')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--no-sandbox')  # 解决DevToolsActivePort文件不存在的报错
+        options.add_argument('--disable-extensions')
+        options.add_argument("--start-maximized")
         return options
 
     elif driver_name == 'firefox':
