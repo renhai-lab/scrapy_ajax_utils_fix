@@ -7,7 +7,7 @@ NOTE: not test on firefox.
 utils for ajax in scrapy project. includes selenium, splash.
 ## installtion
 ```bash
-pip install git+
+pip install scrapy_ajax_utils@git+https://github.com/renhaiidea/scrapy_ajax_utils_fix.git
 ```
 
 ## Usage
