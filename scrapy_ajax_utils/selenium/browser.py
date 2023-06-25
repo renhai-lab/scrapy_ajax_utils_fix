@@ -63,10 +63,12 @@ def wrap_driver(driver):
 
 def make_options(driver_name, headless=True, disable_image=True, user_agent=None):
     if driver_name == 'chrome':
+        print('chrome')
         options = webdriver.ChromeOptions()
-        options.headless = headless
         options.add_argument('--disable-gpu')
-        options.add_argument("--disable-blink-features=AutomationControlled")
+
+        if headless:
+            options.add_argument('--headless')
         if user_agent:
             options.add_argument(f"--user-agent={user_agent}")
         if disable_image:
@@ -82,6 +84,7 @@ def make_options(driver_name, headless=True, disable_image=True, user_agent=None
         return options
 
     elif driver_name == 'firefox':
+        print('firefox')
         options = webdriver.FirefoxOptions()
         options.headless = headless
         if disable_image:
