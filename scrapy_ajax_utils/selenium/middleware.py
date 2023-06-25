@@ -1,94 +1,104 @@
-import os
+import logging
+import threading
 
-from scrapy.downloadermiddlewares.cookies import CookiesMiddleware
-from scrapy.http import HtmlResponse
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-_format_cookie = CookiesMiddleware()._format_cookie
-_js_fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stealth.min.js')
+from scrapy import signals
+from scrapy.http import Request, Response
 
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import TimeoutException
 
-class Browser(object):
-    """Browser to make drivers"""
+from twisted.internet import threads, reactor
+from twisted.python.threadpool import ThreadPool
 
-    support_driver_map = {
-        'firefox': webdriver.Firefox,
-        'chrome': webdriver.Chrome
-    }
+from scrapy_ajax_utils.selenium.browser import Browser
+from scrapy_ajax_utils.selenium.request import SeleniumRequest
 
-    def __init__(self, driver_name='chrome', executable_path=None, options=None, page_load_time_out=30, **opt_kw):
-        assert driver_name in self.support_driver_map, f'{driver_name} not be supported!'
-        self.driver_name = driver_name
-        self.executable_path = executable_path
-        self.service = Service(executable_path=self.executable_path)
-        self.page_load_time_out = page_load_time_out
-        if options is not None:
-            self.options = options
-        else:
-            self.options = make_options(self.driver_name, **opt_kw)
-
-    def driver(self):
-        kwargs = {'service': self.service, 'options': self.options}
-        # Close log file, only works for windows.
-        if self.driver_name == 'firefox':
-            kwargs['service_log_path'] = 'nul'
-        driver = self.support_driver_map[self.driver_name](**kwargs)
-        driver.set_page_load_timeout(self.page_load_time_out)
-        self.prepare_driver(driver)
-        return wrap_driver(driver)
-
-    def prepare_driver(self, driver):
-        if isinstance(driver, webdriver.Chrome):
-            # Remove `window.navigator.webdriver`.
-            with open(_js_fp) as f:
-                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                    "source": f.read()
-                })
+logger = logging.getLogger(__name__)
 
 
-def wrap_driver(driver):
-    def current_resp(request):
-        # cookies = ('%s=%s; Domain=%s' % (c['name'], c['value'], c.get('domain')) for c in driver.get_cookies())
-        cookies = filter(None, (_format_cookie(c, request) for c in driver.get_cookies()))
-        headers = {'Set-Cookie': cookies}
-        return HtmlResponse(driver.current_url,
-                            body=str.encode(driver.page_source),
-                            encoding='utf-8',
-                            request=request,
-                            headers=headers)
+class SeleniumDownloaderMiddleware(object):
 
-    driver.current_resp = current_resp
-    return driver
+    @classmethod
+    def from_crawler(cls, crawler):
+        settings = crawler.settings
+        min_drivers = settings.get('SELENIUM_MIN_DRIVERS', 3)
+        max_drivers = settings.get('SELENIUM_MAX_DRIVERS', 5)
+        browser = _make_browser_from_settings(settings)
+        dm = cls(browser, min_drivers, max_drivers)
+        crawler.signals.connect(dm.spider_closed, signal=signals.spider_closed)
+        return dm
+
+    def __init__(self, browser, min_drivers, max_drivers):
+        self._browser = browser
+        self._drivers = set()
+        self._data = threading.local()
+        self._threadpool = ThreadPool(min_drivers, max_drivers)
+
+    def process_request(self, request, spider):
+        if not isinstance(request, SeleniumRequest):
+            return
+
+        if not self._threadpool.started:
+            self._threadpool.start()
+
+        return threads.deferToThreadPool(
+            reactor, self._threadpool, self.download_by_driver, request, spider
+        )
+
+    def download_by_driver(self, request, spider):
+        driver = self.get_driver()
+
+        try:
+            driver.get(request.url)
+        except TimeoutException:
+            spider.logger.info(f'page download timeout (with selenium): {request.url}')
+
+        # XXX: Check cookies.
+
+        if request.wait_until:
+            try:
+                WebDriverWait(driver, request.wait_time).until(request.wait_until)
+            except TimeoutException:
+                spider.logger.warning(f'page wait timeout (condition: {request.wait_until.locator}), '
+                                      'the request will continue with rendered page.')
+
+        # Execute javascript code and put the result to meta.
+        if request.script:
+            request.meta['js_result'] = driver.execute_script(request.script)
+
+        if request.handler:
+            result = request.handler(driver, request, spider)
+            if isinstance(result, (Request, Response)):
+                return result
+
+        return driver.current_resp(request)
+
+    def get_driver(self):
+        try:
+            driver = self._data.driver
+        except AttributeError:
+            driver = self._browser.driver()
+            self._drivers.add(driver)
+            self._data.driver = driver
+        return driver
+
+    def spider_closed(self):
+        for driver in self._drivers:
+            driver.quit()
+        logger.debug('all webdriver closed.')
+        self._threadpool.stop()
 
 
-def make_options(driver_name, headless=True, disable_image=True, user_agent=None):
-    if driver_name == 'chrome':
-        print('chrome')
-        options = webdriver.ChromeOptions()
-        options.add_argument('--disable-gpu')
-
-        if headless:
-            options.add_argument('--headless')
-        if user_agent:
-            options.add_argument(f"--user-agent={user_agent}")
-        if disable_image:
-            options.add_argument('blink-settings=imagesEnabled=false')
-        options.add_experimental_option('excludeSwitches', ['enable-automation', ])
-        # adding some options
-        options.add_argument('--incognito')
-        options.add_argument('lang=zh_CN.UTF-8')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--no-sandbox')  # 解决DevToolsActivePort文件不存在的报错
-        options.add_argument('--disable-extensions')
-        options.add_argument("--start-maximized")
-        return options
-
-    elif driver_name == 'firefox':
-        print('firefox')
-        options = webdriver.FirefoxOptions()
-        options.headless = headless
-        if disable_image:
-            options.set_preference('permissions.default.image', 2)
-        if user_agent:
-            options.set_preference('general.useragent.override', user_agent)
-        return options
+def _make_browser_from_settings(settings):
+    headless = settings.getbool('SELENIUM_HEADLESS', True)
+    disable_image = settings.get('SELENIUM_DISABLE_IMAGE', True)
+    driver_name = settings.get('SELENIUM_DRIVER_NAME', 'chrome')
+    executable_path = settings.get('SELENIUM_DRIVER_PATH')
+    user_agent = settings.get('USER_AGENT')
+    page_load_time_out = settings.get('SELENIUM_DRIVER_PAGE_LOAD_TIMEOUT', 30)
+    return Browser(headless=headless,
+                   disable_image=disable_image,
+                   driver_name=driver_name,
+                   executable_path=executable_path,
+                   user_agent=user_agent,
+                   page_load_time_out=page_load_time_out)
